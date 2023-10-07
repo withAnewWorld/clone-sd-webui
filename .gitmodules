@@ -1,0 +1,6 @@
+[submodule "taming-transformers"]
+	path = taming-transformers
+	url = git+https://github.com/CompVis/taming-transformers
+[submodule "latent-diffusion"]
+	path = latent-diffusion
+	url = git+https://github.com/CompVis/git+https://github.com/CompVis/latent-diffusion
