@@ -1,0 +1,11 @@
+# Production requirements
+
+omegaconf>=2.0.0
+pytorch-lightning>=1.7.7
+torch-fidelity
+einops
+ldm-fix
+k-diffusion
+gradio
+latent-diffusion @ git+https://github.com/CompVis/latent-diffusion
+taming-transformers @ git+https://github.com/CompVis/taming-transformers
