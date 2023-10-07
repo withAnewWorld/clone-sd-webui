@@ -107,6 +107,10 @@ def translation(
     seed: int,
     height: int,
     width: int,
+    n_rows: int,
+    precision: str,
+    skip_save: bool,
+    skip_grid: bool,
     outpath: str = "outputs/img2img-samples",
     device: str = "cuda",
 ):
@@ -122,7 +126,7 @@ def translation(
     os.makedirs(outpath, exist_ok=True)
 
     batch_size = n_samples
-    n_rows = args.n_rows if args.n_rows > 0 else batch_size
+    n_rows = n_rows if n_rows > 0 else batch_size
 
     assert prompt is not None
     data = [batch_size * [prompt]]
@@ -140,7 +144,7 @@ def translation(
     image = torch.from_numpy(image)
 
     output_images = []
-    precision_scope = autocast if args.precision == "autocast" else nullcontext
+    precision_scope = autocast if precision == "autocast" else nullcontext
     with torch.no_grad():
         with precision_scope("cuda"):
             init_image = 2.0 * image - 1.0
@@ -197,7 +201,7 @@ def translation(
                             (x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0
                         )
 
-                        if not args.skip_save:
+                        if not skip_save:
                             for x_sample in x_samples_ddim:
                                 x_sample = 255.0 * rearrange(
                                     x_sample.cpu().numpy(), "c h w -> h w c"
@@ -213,10 +217,10 @@ def translation(
                                 base_count += 1
                                 seedit += 1
 
-                        if not args.skip_grid:
+                        if not skip_grid:
                             all_samples.append(x_samples_ddim)
 
-                if not args.skip_grid:
+                if not skip_grid:
                     # additio
                     # nally, save as grid
                     grid = torch.stack(all_samples, 0)
@@ -254,5 +258,9 @@ if __name__ == "__main__":
         -1,
         64,
         64,
+        n_rows=args.n_rows,
+        precision=args.precision,
+        skip_save=args.skip_save,
+        skip_grid=args.skip_grid
         device=args.device,
     )
