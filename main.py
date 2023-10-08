@@ -23,10 +23,13 @@ from ldm.models.diffusion.plms import PLMSSampler
 import torch
 
 from utils import get_model
+import math
 
 mimetypes.init()
 mimetypes.add_type("application/javascript", ".js")
 
+opt_C = 4
+opt_f = 8
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -52,13 +55,13 @@ def parse_args():
     parser.add_argument(
         "--config",
         type=str,
-        default="latent-diffusion/configs/latent-diffusion/cin256-v2.yaml",
+        default="latent-diffusion/configs/latent-diffusion/txt2img-1p4B-eval.yaml",
         help="path to config which constructs model",
     )
     parser.add_argument(
         "--ckpt",
         type=str,
-        default="latent-diffusion/models/ldm/cin256-v2/model.ckpt",
+        default="latent-diffusion/models/ldm/txt2img-f8-large/model.ckpt",
         help="path to checkpoint of model",
     )
     parser.add_argument("--device", type=str, default="cuda", help="accelerator")
@@ -81,6 +84,24 @@ def parse_args():
     args = parser.parse_args()
     return args
 
+
+def image_grid(imgs, batch_size):
+    if args.n_rows > 0:
+        rows = args.n_rows
+    elif args.n_rows == 0:
+        rows = batch_size
+    else:
+        rows = round(math.sqrt(len(imgs)))
+
+    cols = math.ceil(len(imgs) / rows)
+
+    w, h = imgs[0].size
+    grid = Image.new('RGB', size=(cols * w, rows * h), color='black')
+
+    for i, img in enumerate(imgs):
+        grid.paste(img, box=(i % cols * w, i // cols * h))
+
+    return grid
 
 class CFGDenoiser(nn.Module):
     def __init__(self, model):
@@ -149,8 +170,8 @@ def translation(
         with precision_scope("cuda"):
             init_image = 2.0 * image - 1.0
             init_image = init_image.to(device)
-            init_image = repeat(init_image, "1 ... -> b ...", b=batch_size)
-            init_latent = model.get_first_stage_encoding(
+            init_image = repeat(init_image, "1 ... -> b ...", b=batch_size) # N C H W
+            init_latent = model.get_first_stage_encoding( # N C H//4, W//4
                 model.encode_first_stage(init_image)
             )  # move to latent space
             x0 = init_latent
@@ -238,29 +259,151 @@ def translation(
     del sampler
     return output_images, seed
 
+def dream(prompt: str, ddim_steps: int, sampler_name: str, use_GFPGAN: bool, ddim_eta: float, n_iter: int, n_samples: int, cfg_scale: float, seed: int, height: int, width: int):
+    torch.cuda.empty_cache()
+
+    outpath = args.outdir or "outputs/txt2img-samples"
+
+    if seed == -1:
+        seed = random.randrange(4294967294)
+
+    seed = int(seed)
+
+    is_PLMS = sampler_name == 'PLMS'
+    is_DDIM = sampler_name == 'DDIM'
+    is_Kdif = sampler_name == 'k-diffusion'
+
+    sampler = None
+    if is_PLMS:
+        sampler = PLMSSampler(model)
+    elif is_DDIM:
+        sampler = DDIMSampler(model)
+    elif is_Kdif:
+        pass
+    else:
+        raise Exception("Unknown sampler: " + sampler_name)
+
+    model_wrap = K.external.CompVisDenoiser(model)
+
+    os.makedirs(outpath, exist_ok=True)
+
+    batch_size = n_samples
+
+    assert prompt is not None
+    data = [batch_size * [prompt]]
+
+    sample_path = os.path.join(outpath, "samples")
+    os.makedirs(sample_path, exist_ok=True)
+    base_count = len(os.listdir(sample_path))
+    grid_count = len(os.listdir(outpath)) - 1
+
+    precision_scope = autocast if args.precision == "autocast" else nullcontext
+    output_images = []
+    with torch.no_grad(), precision_scope("cuda"), model.ema_scope():
+        for n in range(n_iter):
+            for batch_index, prompts in enumerate(data):
+                uc = None
+                if cfg_scale != 1.0:
+                    uc = model.get_learned_conditioning(batch_size * [""])
+                if isinstance(prompts, tuple):
+                    prompts = list(prompts)
+                c = model.get_learned_conditioning(prompts)
+                shape = [opt_C, height // opt_f, width // opt_f]
+
+                current_seed = seed + n * len(data) + batch_index
+                torch.manual_seed(current_seed)
+
+                if is_Kdif:
+                    sigmas = model_wrap.get_sigmas(ddim_steps)
+                    x = torch.randn([n_samples, *shape], device=args.device) * sigmas[0]  # for GPU draw
+                    model_wrap_cfg = CFGDenoiser(model_wrap)
+                    samples_ddim = K.sampling.sample_lms(model_wrap_cfg, x, sigmas, extra_args={'cond': c, 'uncond': uc, 'cond_scale': cfg_scale}, disable=False)
+
+                elif sampler is not None:
+                    samples_ddim, _ = sampler.sample(S=ddim_steps, conditioning=c, batch_size=n_samples, shape=shape, verbose=False, unconditional_guidance_scale=cfg_scale, unconditional_conditioning=uc, eta=ddim_eta, x_T=None)
+                # samples_ddim, _ = sampler.sample(S=ddim_steps,
+                #                                          conditioning=c,
+                #                                          batch_size=n_samples,
+                #                                          shape=shape,
+                #                                          verbose=False,
+                #                                          unconditional_guidance_scale=7.5,
+                #                                          unconditional_conditioning=uc,
+                #                                          eta=ddim_eta,
+                #                                          x_T=None)
+                
+                x_samples_ddim = model.decode_first_stage(samples_ddim)
+                x_samples_ddim = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
+
+                if not args.skip_save or not args.skip_grid:
+                    for x_sample in x_samples_ddim:
+                        x_sample = 255. * rearrange(x_sample.cpu().numpy(), 'c h w -> h w c')
+                        x_sample = x_sample.astype(np.uint8)
+
+                        # if use_GFPGAN and GFPGAN is not None:
+                        #     cropped_faces, restored_faces, restored_img = GFPGAN.enhance(x_sample, has_aligned=False, only_center_face=False, paste_back=True)
+                        #     x_sample = restored_img
+
+                        image = Image.fromarray(x_sample)
+
+                        image.save(os.path.join(sample_path, f"{base_count:05}-{current_seed}_{prompt.replace(' ', '_')[:128]}.png"))
+                        output_images.append(image)
+                        base_count += 1
+
+        if not args.skip_grid:
+            # additionally, save as grid
+            grid = image_grid(output_images, batch_size)
+            grid.save(os.path.join(outpath, f'grid-{grid_count:04}.png'))
+            grid_count += 1
+
+
+    if sampler is not None:
+        del sampler
+
+    info = f"""
+{prompt}
+Steps: {ddim_steps}, Sampler: {sampler_name}, CFG scale: {cfg_scale}, Seed: {seed}{', GFPGAN' if use_GFPGAN else ''}
+    """.strip()
+
+    return output_images, seed, info
+
 
 if __name__ == "__main__":
     args = parse_args()
 
     img = Image.open(args.image)
     model = get_model(args.config, args.ckpt)
+    model = model.half().to(args.device)
     sampler = DDIMSampler(model)
 
     output, seed = translation(
-        "A fantasy landscape, trending on artstation.",
-        img,
-        1,
-        0.0,
-        1,
-        1,
-        1.0,
-        0.0,
-        -1,
-        64,
-        64,
+       prompt =  "A fantasy landscape, trending on artstation.",
+        init_img = img,
+        ddim_steps = 150,
+        ddim_eta = 0.0,
+        n_iter = 20,
+        n_samples = 1,
+        cfg_scale = 5.0,
+        denoising_strength = 0.75,
+        seed = -1,
+        height = 256,
+        width = 256,
         n_rows=args.n_rows,
         precision=args.precision,
         skip_save=args.skip_save,
-        skip_grid=args.skip_grid
+        skip_grid=args.skip_grid,
         device=args.device,
     )
+
+    # dream(
+    #     prompt =  "a painting of a virus monster playing guitar",
+    #     ddim_steps = 150,
+    #     sampler_name = "PLMS",
+    #     use_GFPGAN=False,
+    #     ddim_eta = 0.0,
+    #     n_iter = 20,
+    #     n_samples = 1,
+    #     cfg_scale = 5.0,
+    #     seed = -1,
+    #     height = 256,
+    #     width = 256,
+    # )
