@@ -6,8 +6,7 @@ git clone https://github.com/CompVis/latent-diffusion.git
 git clone https://github.com/CompVis/taming-transformers
 pip install -e ./taming-transformers
 cd latent-diffusion/
-wget -O models/ldm/text2img256/model.zip https://ommer-lab.com/files/latent-diffusion/text2img.zip
-cd models/ldm/text2img256
-unzip -o model.zip
+mkdir models/ldm/txt2img-f8-large
+wget -O models/ldm/txt2img-f8-large https://ommer-lab.com/files/latent-diffusion/nitro/txt2img-f8-large/model.ckpt
 pip install omegaconf>=2.0.0 pytorch-lightning>=1.7.7 torch-fidelity einops ldm-fix k-diffusion gradio
 ```
