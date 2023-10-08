@@ -31,6 +31,7 @@ mimetypes.add_type("application/javascript", ".js")
 opt_C = 4
 opt_f = 8
 
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -96,12 +97,13 @@ def image_grid(imgs, batch_size):
     cols = math.ceil(len(imgs) / rows)
 
     w, h = imgs[0].size
-    grid = Image.new('RGB', size=(cols * w, rows * h), color='black')
+    grid = Image.new("RGB", size=(cols * w, rows * h), color="black")
 
     for i, img in enumerate(imgs):
         grid.paste(img, box=(i % cols * w, i // cols * h))
 
     return grid
+
 
 class CFGDenoiser(nn.Module):
     def __init__(self, model):
@@ -255,7 +257,20 @@ def translation(
     del sampler
     return output_images, seed
 
-def dream(prompt: str, ddim_steps: int, sampler_name: str, use_GFPGAN: bool, ddim_eta: float, n_iter: int, n_samples: int, cfg_scale: float, seed: int, height: int, width: int):
+
+def dream(
+    prompt: str,
+    ddim_steps: int,
+    sampler_name: str,
+    use_GFPGAN: bool,
+    ddim_eta: float,
+    n_iter: int,
+    n_samples: int,
+    cfg_scale: float,
+    seed: int,
+    height: int,
+    width: int,
+):
     torch.cuda.empty_cache()
 
     outpath = opt.outdir or "outputs/txt2img-samples"
@@ -265,9 +280,9 @@ def dream(prompt: str, ddim_steps: int, sampler_name: str, use_GFPGAN: bool, ddi
 
     seed = int(seed)
 
-    is_PLMS = sampler_name == 'PLMS'
-    is_DDIM = sampler_name == 'DDIM'
-    is_Kdif = sampler_name == 'k-diffusion'
+    is_PLMS = sampler_name == "PLMS"
+    is_DDIM = sampler_name == "DDIM"
+    is_Kdif = sampler_name == "k-diffusion"
 
     sampler = None
     if is_PLMS:
@@ -311,19 +326,41 @@ def dream(prompt: str, ddim_steps: int, sampler_name: str, use_GFPGAN: bool, ddi
 
                 if is_Kdif:
                     sigmas = model_wrap.get_sigmas(ddim_steps)
-                    x = torch.randn([n_samples, *shape], device=opt.device) * sigmas[0]  # for GPU draw
+                    x = (
+                        torch.randn([n_samples, *shape], device=opt.device) * sigmas[0]
+                    )  # for GPU draw
                     model_wrap_cfg = CFGDenoiser(model_wrap)
-                    samples_ddim = K.sampling.sample_lms(model_wrap_cfg, x, sigmas, extra_args={'cond': c, 'uncond': uc, 'cond_scale': cfg_scale}, disable=False)
+                    samples_ddim = K.sampling.sample_lms(
+                        model_wrap_cfg,
+                        x,
+                        sigmas,
+                        extra_args={"cond": c, "uncond": uc, "cond_scale": cfg_scale},
+                        disable=False,
+                    )
 
                 elif sampler is not None:
-                    samples_ddim, _ = sampler.sample(S=ddim_steps, conditioning=c, batch_size=n_samples, shape=shape, verbose=False, unconditional_guidance_scale=cfg_scale, unconditional_conditioning=uc, eta=ddim_eta, x_T=None)
-                
+                    samples_ddim, _ = sampler.sample(
+                        S=ddim_steps,
+                        conditioning=c,
+                        batch_size=n_samples,
+                        shape=shape,
+                        verbose=False,
+                        unconditional_guidance_scale=cfg_scale,
+                        unconditional_conditioning=uc,
+                        eta=ddim_eta,
+                        x_T=None,
+                    )
+
                 x_samples_ddim = model.decode_first_stage(samples_ddim)
-                x_samples_ddim = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
+                x_samples_ddim = torch.clamp(
+                    (x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0
+                )
 
                 if not opt.skip_save or not opt.skip_grid:
                     for x_sample in x_samples_ddim:
-                        x_sample = 255. * rearrange(x_sample.cpu().numpy(), 'c h w -> h w c')
+                        x_sample = 255.0 * rearrange(
+                            x_sample.cpu().numpy(), "c h w -> h w c"
+                        )
                         x_sample = x_sample.astype(np.uint8)
 
                         # if use_GFPGAN and GFPGAN is not None:
@@ -332,16 +369,20 @@ def dream(prompt: str, ddim_steps: int, sampler_name: str, use_GFPGAN: bool, ddi
 
                         image = Image.fromarray(x_sample)
 
-                        image.save(os.path.join(sample_path, f"{base_count:05}-{current_seed}_{prompt.replace(' ', '_')[:128]}.png"))
+                        image.save(
+                            os.path.join(
+                                sample_path,
+                                f"{base_count:05}-{current_seed}_{prompt.replace(' ', '_')[:128]}.png",
+                            )
+                        )
                         output_images.append(image)
                         base_count += 1
 
         if not opt.skip_grid:
             # additionally, save as grid
             grid = image_grid(output_images, batch_size)
-            grid.save(os.path.join(outpath, f'grid-{grid_count:04}.png'))
+            grid.save(os.path.join(outpath, f"grid-{grid_count:04}.png"))
             grid_count += 1
-
 
     if sampler is not None:
         del sampler
@@ -361,7 +402,6 @@ if __name__ == "__main__":
     model = get_model(opt.config, opt.ckpt)
     model = model.half().to(opt.device)
 
-
     # txt2img
 
     # dream(
@@ -379,7 +419,7 @@ if __name__ == "__main__":
     # )
 
     # img2img
-    
+
     # output, seed = translation(
     #    prompt =  "A fantasy landscape, trending on artstation.",
     #     init_img = img,
