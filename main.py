@@ -402,34 +402,55 @@ if __name__ == "__main__":
     model = get_model(opt.config, opt.ckpt)
     model = model.half().to(opt.device)
 
-    # txt2img
+    dream_interface = gr.Interface(
+    dream,
+    inputs=[
+        gr.Textbox(label="Prompt", placeholder="a painting of a virus monster playing guitar", lines=1),
+        gr.Slider(minimum=1, maximum=150, step=1, label="Sampling Steps", value=150),
+        gr.Radio(label='Sampling method', choices=["DDIM", "PLMS", "k-diffusion"], value="PLMS"),
+        # gr.Checkbox(label='Enable Fixed Code sampling', value=False),
+        gr.Checkbox(label='Fix faces using GFPGAN', value=False, visible=False),
+        gr.Slider(minimum=0.0, maximum=1.0, step=0.01, label="DDIM ETA", value=0.0, visible=False),
+        gr.Slider(minimum=1, maximum=16, step=1, label='Sampling iterations', value=1),
+        gr.Slider(minimum=1, maximum=4, step=1, label='Samples per iteration', value=1),
+        gr.Slider(minimum=1.0, maximum=15.0, step=0.5, label='Classifier Free Guidance Scale', value=7.0),
+        gr.Number(label='Seed', value=-1),
+        gr.Slider(minimum=64, maximum=2048, step=64, label="Height", value=512),
+        gr.Slider(minimum=64, maximum=2048, step=64, label="Width", value=512),
+    ],
+    outputs=[
+        gr.Gallery(label="Images"),
+        gr.Number(label='Seed'),
+        gr.Textbox(label="Copy-paste generation parameters"),
+    ],
+    title="Stable Diffusion Text-to-Image K",
+    description="Generate images from text with Stable Diffusion (using K-LMS)",
+    allow_flagging="never"
+    )
 
-    # dream(
-    #     prompt =  "a painting of a virus monster playing guitar",
-    #     ddim_steps = 150,
-    #     sampler_name = "PLMS",
-    #     use_GFPGAN=False,
-    #     ddim_eta = 0.0,
-    #     n_iter = 20,
-    #     n_samples = 1,
-    #     cfg_scale = 5.0,
-    #     seed = -1,
-    #     height = 256,
-    #     width = 256,
-    # )
+    img2img_interface = gr.Interface(
+    translation,
+    inputs=[
+        gr.Textbox(placeholder="A fantasy landscape, trending on artstation.", lines=1),
+        gr.Image(value="https://raw.githubusercontent.com/CompVis/stable-diffusion/main/assets/stable-samples/img2img/sketch-mountains-input.jpg", source="upload", interactive=True, type="pil"),
+        gr.Slider(minimum=1, maximum=150, step=1, label="Sampling Steps", value=150),
+        gr.Slider(minimum=0.0, maximum=1.0, step=0.01, label="DDIM ETA", value=0.0, visible=False),
+        gr.Slider(minimum=1, maximum=50, step=1, label='Sampling iterations', value=1),
+        gr.Slider(minimum=1, maximum=8, step=1, label='Samples per iteration', value=1),
+        gr.Slider(minimum=1.0, maximum=15.0, step=0.5, label='Classifier Free Guidance Scale', value=7.0),
+        gr.Slider(minimum=0.0, maximum=1.0, step=0.01, label='Denoising Strength', value=0.75),
+        gr.Number(label='Seed', value=-1),
+        gr.Slider(minimum=64, maximum=2048, step=64, label="Resize Height", value=512),
+        gr.Slider(minimum=64, maximum=2048, step=64, label="Resize Width", value=512),
+    ],
+    outputs=[
+        gr.Gallery(),
+        gr.Number(label='Seed')
+    ],
+    title="Stable Diffusion Image-to-Image",
+    description="Generate images from images with Stable Diffusion",
+)
 
-    # img2img
+    demo = gr.TabbedInterface(interface_list=[dream_interface, img2img_interface], tab_names=["Dream", "Image Translation"])
 
-    # output, seed = translation(
-    #    prompt =  "A fantasy landscape, trending on artstation.",
-    #     init_img = img,
-    #     ddim_steps = 150,
-    #     ddim_eta = 0.0,
-    #     n_iter = 20,
-    #     n_samples = 1,
-    #     cfg_scale = 5.0,
-    #     denoising_strength = 0.75,
-    #     seed = -1,
-    #     height = 256,
-    #     width = 256,
-    # )
+    demo.launch()
