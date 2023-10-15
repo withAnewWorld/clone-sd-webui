@@ -7,5 +7,6 @@ einops
 ldm-fix
 k-diffusion
 gradio
+transformers
 latent-diffusion @ git+https://github.com/CompVis/latent-diffusion
 taming-transformers @ git+https://github.com/CompVis/taming-transformers
