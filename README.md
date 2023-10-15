@@ -10,6 +10,6 @@ mkdir models/ldm/txt2img-f8-large
 cd models/ldm/txt2img-f8-large
 apt-get install axel
 axel https://ommer-lab.com/files/latent-diffusion/nitro/txt2img-f8-large/model.ckpt
-pip install omegaconf>=2.0.0 pytorch-lightning>=1.7.7 torch-fidelity einops ldm-fix k-diffusion gradio
+pip install omegaconf>=2.0.0 pytorch-lightning>=1.7.7 torch-fidelity einops ldm-fix k-diffusion gradio pre-commit black
 cd /clone-se-webui/
 ```
