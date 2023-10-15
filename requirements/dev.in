@@ -1,3 +1,4 @@
 # Development requirements
 
 black
+pre-commit
