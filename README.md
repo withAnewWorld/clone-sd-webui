@@ -12,5 +12,6 @@ apt-get install axel
 axel https://ommer-lab.com/files/latent-diffusion/nitro/txt2img-f8-large/model.ckpt
 pip install omegaconf>=2.0.0 pytorch-lightning>=1.7.7 torch-fidelity einops ldm-fix k-diffusion gradio pre-commit black transfomers
 pre-commit install
-cd /clone-se-webui/
+cd /clone-sd-webui/
+apt-get install msttcorefonts # for font(arial.ttf)
 ```
