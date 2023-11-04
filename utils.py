@@ -33,23 +33,30 @@ def get_model(cfg_path, ckpt):
 
 def draw_prompt_matrix(im, width, height, all_prompts):
     def wrap(text, d, font, line_length):
-        lines = ['']
+        lines = [""]
         for word in text.split():
-            line = f'{lines[-1]} {word}'.strip()
+            line = f"{lines[-1]} {word}".strip()
             if d.textlength(line, font=font) <= line_length:
                 lines[-1] = line
             else:
                 lines.append(word)
-        return '\n'.join(lines)
+        return "\n".join(lines)
 
     def draw_texts(pos, x, y, texts, sizes):
         for i, (text, size) in enumerate(zip(texts, sizes)):
             active = pos & (1 << i) != 0
 
             if not active:
-                text = '\u0336'.join(text) + '\u0336'
+                text = "\u0336".join(text) + "\u0336"
 
-            d.multiline_text((x, y + size[1] / 2), text, font=fnt, fill=color_active if active else color_inactive, anchor="mm", align="center")
+            d.multiline_text(
+                (x, y + size[1] / 2),
+                text,
+                font=fnt,
+                fill=color_active if active else color_inactive,
+                anchor="mm",
+                align="center",
+            )
 
             y += size[1] + line_spacing
 
@@ -76,8 +83,14 @@ def draw_prompt_matrix(im, width, height, all_prompts):
     prompts_horiz = [wrap(x, d, fnt, width) for x in prompts[:boundary]]
     prompts_vert = [wrap(x, d, fnt, pad_left) for x in prompts[boundary:]]
 
-    sizes_hor = [(x[2] - x[0], x[3] - x[1]) for x in [d.multiline_textbbox((0, 0), x, font=fnt) for x in prompts_horiz]]
-    sizes_ver = [(x[2] - x[0], x[3] - x[1]) for x in [d.multiline_textbbox((0, 0), x, font=fnt) for x in prompts_vert]]
+    sizes_hor = [
+        (x[2] - x[0], x[3] - x[1])
+        for x in [d.multiline_textbbox((0, 0), x, font=fnt) for x in prompts_horiz]
+    ]
+    sizes_ver = [
+        (x[2] - x[0], x[3] - x[1])
+        for x in [d.multiline_textbbox((0, 0), x, font=fnt) for x in prompts_vert]
+    ]
     hor_text_height = sum([x[1] + line_spacing for x in sizes_hor]) - line_spacing
     ver_text_height = sum([x[1] + line_spacing for x in sizes_ver]) - line_spacing
 
