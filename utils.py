@@ -67,7 +67,7 @@ def draw_prompt_matrix(im, width, height, all_prompts):
     color_inactive = (153, 153, 153)
 
     pad_top = height // 4
-    pad_left = width * 3 // 4
+    pad_left = width * 3 // 4 if len(all_prompts) > 2 else 0
 
     cols = im.width // width
     rows = im.height // height
@@ -107,3 +107,17 @@ def draw_prompt_matrix(im, width, height, all_prompts):
         draw_texts(row, x, y, prompts_vert, sizes_ver)
 
     return result
+
+
+def create_random_tensors(shape, seeds, device):
+    xs = []
+    for seed in seeds:
+        torch.manual_seed(seed)
+
+        # randn results depend on device; gpu and cpu get different results for same seed;
+        # the way I see it, it's better to do this on CPU, so that everyone gets same result;
+        # but the original script had it like this so i do not dare change it for now because
+        # it will break everyone's seeds.
+        xs.append(torch.randn(shape, device=device))
+    x = torch.stack(xs)
+    return x

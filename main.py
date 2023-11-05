@@ -7,7 +7,6 @@ import numpy as np
 import gradio as gr
 from PIL import Image
 from einops import rearrange, repeat
-from torchvision.utils import make_grid
 from torch import autocast
 from contextlib import nullcontext
 import mimetypes
@@ -18,7 +17,7 @@ from ldm.models.diffusion.ddim import DDIMSampler
 from ldm.models.diffusion.plms import PLMSSampler
 import torch
 
-from utils import get_model, draw_prompt_matrix
+from utils import create_random_tensors, get_model, draw_prompt_matrix
 import math
 
 from gr_utils import Flagging
@@ -128,147 +127,207 @@ class CFGDenoiser(nn.Module):
         return uncond + (cond - uncond) * cond_scale
 
 
-def translation(
+def img2img(
     prompt: str,
     init_img,
     ddim_steps: int,
-    ddim_eta: float,
+    prompt_matrix: bool,
     n_iter: int,
-    n_samples: int,
+    batch_size: int,
     cfg_scale: float,
     denoising_strength: float,
     seed: int,
     height: int,
     width: int,
 ):
-    torch.cuda.empty_cache()
-
     outpath = opt.outdir or "outputs/img2img-samples"
+
+    sampler = DDIMSampler(model)
+
+    assert 0.0 <= denoising_strength <= 1.0, "can only work with strength in [0.0, 1.0]"
+    t_enc = int(denoising_strength * ddim_steps)
+
+    def init():
+        image = init_img.convert("RGB")
+        image = image.resize((width, height), resample=Image.Resampling.LANCZOS)
+        image = np.array(image).astype(np.float32) / 255.0
+        image = image[None].transpose(0, 3, 1, 2)
+        image = torch.from_numpy(image)
+
+        init_image = 2.0 * image - 1.0
+        init_image = init_image.to(opt.device)
+        init_image = repeat(init_image, "1 ... -> b ...", b=batch_size)
+        init_latent = model.get_first_stage_encoding(
+            model.encode_first_stage(init_image)
+        )  # move to latent space
+        return (init_latent,)
+
+    def sample(init_data, x, conditioning, unconditional_conditioning):
+        (x0,) = init_data
+        sigmas = sampler.model_wrap.get_sigmas(ddim_steps)
+        noise = x * sigmas[ddim_steps - t_enc - 1]
+
+        xi = x0 + noise
+        sigma_sched = sigmas[ddim_steps - t_enc - 1 :]
+        model_wrap_cfg = CFGDenoiser(sampler.model_wrap)
+
+        sampler_ddim = K.sampling.sample_lms(
+            model_wrap_cfg,
+            xi,
+            sigma_sched,
+            extra_args={
+                "cond": conditioning,
+                "uncond": unconditional_conditioning,
+                "cond_scale": cfg_scale,
+            },
+            disable=False,
+        )
+        return sampler_ddim
+
+    output_images, seed, info = process_images(
+        outpath=outpath,
+        func_init=init,
+        func_sample=sample,
+        prompt=prompt,
+        seed=seed,
+        sampler_name="k-diffusion",
+        batch_size=batch_size,
+        n_iter=n_iter,
+        steps=ddim_steps,
+        cfg_scale=cfg_scale,
+        width=width,
+        height=height,
+        prompt_matrix=prompt_matrix,
+        use_GFPGAN=False,
+    )
+
+    del sampler
+
+    return output_images, seed, info
+
+
+def process_images(
+    outpath,
+    func_init,
+    func_sample,
+    prompt,
+    seed,
+    sampler_name,
+    batch_size,
+    n_iter,
+    steps,
+    cfg_scale,
+    width,
+    height,
+    prompt_matrix,
+    use_GFPGAN,
+):
+    """this is the main loop that both txt2img and img2img use
+    it calls func_init once inside all the scopes and func_sample once per batch"""
+    assert prompt is not None
+    torch.cuda.empty_cache()
 
     if seed == -1:
         seed = random.randrange(4294967294)
 
-    sampler = DDIMSampler(model)
-
-    model_wrap = K.external.CompVisDenoiser(model)
-
+    seed = int(seed)
     os.makedirs(outpath, exist_ok=True)
 
-    batch_size = n_samples
-    n_rows = opt.n_rows if opt.n_rows > 0 else batch_size
-
-    assert prompt is not None
-    data = [batch_size * [prompt]]
-
-    sample_path = os.path.join(outpath, "samples")
+    sample_path = os.path.join(outpath, "sample")
     os.makedirs(sample_path, exist_ok=True)
     base_count = len(os.listdir(sample_path))
     grid_count = len(os.listdir(outpath)) - 1
-    seedit = 0
 
-    image = init_img.convert("RGB")
-    image = image.resize((width, height), resample=Image.Resampling.LANCZOS)
-    image = np.array(image).astype(np.float32) / 255.0
-    image = image[None].transpose(0, 3, 1, 2)
-    image = torch.from_numpy(image)
+    prompt_matrix_parts = []
+    if prompt_matrix:
+        all_prompts = []
+        prompt_matrix_parts = prompt.split("|")
+        combination_count = 2 ** (len(prompt_matrix_parts) - 1)
+        for combination_num in range(combination_count):
+            current = prompt_matrix_parts[0]
 
-    output_images = []
+            for n, text in enumerate(prompt_matrix_parts[1:]):
+                if combination_num & (2**n) > 0:
+                    current += ("" if text.strip().startswith(",") else ", ") + text
+            all_prompts.append(current)
+
+        n_iter = math.ceil(len(all_prompts) / batch_size)
+        all_seeds = len(all_prompts) * [seed]
+        print(
+            f"Prompt matrix will create {len(all_prompts)} images using a total of {n_iter} batches."
+        )
+    else:
+        all_prompts = batch_size * n_iter * [prompt]
+        all_seeds = [seed + x for x in range(len(all_prompts))]
+
     precision_scope = autocast if opt.precision == "autocast" else nullcontext
-    with torch.no_grad():
-        with precision_scope("cuda"):
-            init_image = 2.0 * image - 1.0
-            init_image = init_image.to(opt.device)
-            init_image = repeat(init_image, "1 ... -> b ...", b=batch_size)
-            init_latent = model.get_first_stage_encoding(
-                model.encode_first_stage(init_image)
-            )  # move to latent space
-            x0 = init_latent
+    output_images = []
+    with torch.no_grad(), precision_scope("cuda"), model.ema_scope():
+        init_data = func_init()
 
-            sampler.make_schedule(
-                ddim_num_steps=ddim_steps, ddim_eta=ddim_eta, verbose=False
+        for n in range(n_iter):
+            batch_slice = slice(n * batch_size, (n + 1) * batch_size)
+            prompts = all_prompts[batch_slice]
+            seeds = all_seeds[batch_slice]
+
+            uc = n
+            if cfg_scale != 1.0:
+                uc = model.get_learned_conditioning(len(prompts) * [""])
+            if isinstance(prompts, tuple):
+                prompts = list(prompts)
+            c = model.get_learned_conditioning(prompts)
+
+            x = create_random_tensors(
+                [opt_C, height // opt_f, width // opt_f], seeds=seeds, device=opt.device
             )
 
-            assert (
-                0.0 <= denoising_strength <= 1.0
-            ), "can only work with strength in [0.0, 1.0]"
-            t_enc = int(denoising_strength * ddim_steps)
-            print(f"target t_enc is {t_enc} steps")
-            with model.ema_scope():
-                all_samples = list()
-                for n in range(n_iter):
-                    for batch_index, prompts in enumerate(data):
-                        uc = None
-                        if cfg_scale != 1.0:
-                            uc = model.get_learned_conditioning(batch_size * [""])
-                        if isinstance(prompts, tuple):
-                            prompts = list(prompts)
-                        c = model.get_learned_conditioning(prompts)
+            samples_ddim = func_sample(
+                init_data=init_data, x=x, conditioning=c, unconditional_conditioning=uc
+            )
 
-                        sigmas = model_wrap.get_sigmas(ddim_steps)
+            x_samples_ddim = model.decode_first_stage(samples_ddim)
+            x_samples_ddim = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
 
-                        current_seed = seed + n * len(data) + batch_index
-                        torch.manual_seed(current_seed)
-
-                        noise = (
-                            torch.randn_like(x0) * sigmas[ddim_steps - t_enc - 1]
-                        )  # for GPU draw
-                        xi = x0 + noise
-                        sigma_sched = sigmas[ddim_steps - t_enc - 1 :]
-                        # x = torch.randn([n_samples, *shape]).to(device) * sigmas[0] # for CPU draw
-                        model_wrap_cfg = CFGDenoiser(model_wrap)
-                        extra_args = {"cond": c, "uncond": uc, "cond_scale": cfg_scale}
-
-                        samples_ddim = K.sampling.sample_lms(
-                            model_wrap_cfg,
-                            xi,
-                            sigma_sched,
-                            extra_args=extra_args,
-                            disable=False,
-                        )
-                        x_samples_ddim = model.decode_first_stage(samples_ddim)
-                        x_samples_ddim = torch.clamp(
-                            (x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0
-                        )
-
-                        if not opt.skip_save:
-                            for x_sample in x_samples_ddim:
-                                x_sample = 255.0 * rearrange(
-                                    x_sample.cpu().numpy(), "c h w -> h w c"
-                                )
-                                image = Image.fromarray(x_sample.astype(np.uint8))
-                                image.save(
-                                    os.path.join(
-                                        sample_path,
-                                        f"{base_count:05}-{current_seed}_{prompt.replace(' ', '_').trnaslate({ord(x): '' for x in invalid_filename_chars})[:128]}.png",
-                                    )
-                                )
-                                output_images.append(image)
-                                base_count += 1
-                                seedit += 1
-
-                        if not opt.skip_grid:
-                            all_samples.append(x_samples_ddim)
-
-                if not opt.skip_grid:
-                    # additio
-                    # nally, save as grid
-                    grid = torch.stack(all_samples, 0)
-                    grid = rearrange(grid, "n b c h w -> (n b) c h w")
-                    grid = make_grid(grid, nrow=n_rows)
-
-                    # to image
-                    grid = 255.0 * rearrange(grid, "c h w -> h w c").cpu().numpy()
-                    Image.fromarray(grid.astype(np.uint8)).save(
-                        os.path.join(outpath, f"grid-{grid_count:04}.png")
+            if prompt_matrix or not opt.skip_save or not opt.skip_grid:
+                for i, x_sample in enumerate(x_samples_ddim):
+                    x_sample = 255.0 * rearrange(
+                        x_sample.cpu().numpy(), "c h w -> h w c"
                     )
-                    Image.fromarray(grid.astype(np.uint8))
-                    grid_count += 1
+                    x_sample = x_sample.astype(np.uint8)
 
-    del sampler
-    return output_images, seed
+                image = Image.fromarray(x_sample)
+                filename = f"{base_count:05}-{seeds[i]}_{prompts[i].replace(' ', '_').translate({ord(x): '' for x in invalid_filename_chars})[:128]}.png"
+
+                image.save(os.path.join(sample_path, filename))
+
+                output_images.append(image)
+                base_count += 1
+
+        if prompt_matrix or not opt.skip_grid:
+            grid = image_grid(output_images, batch_size, round_down=prompt_matrix)
+
+            if prompt_matrix:
+                try:
+                    grid = draw_prompt_matrix(grid, width, height, prompt_matrix_parts)
+                except Exception:
+                    import traceback
+                    import sys
+
+                    print("Error creating prompt_matrix text: ", file=sys.stderr)
+                    print(traceback.format_exc(), file=sys.stderr)
+
+                output_images.insert(0, grid)
+            grid.save(os.path.join(outpath, f"grid-{grid_count:04}.png"))
+            grid_count += 1
+    info = f"""
+{prompt}
+Steps: {steps}, Sampler: {sampler_name}, CFG scale: {cfg_scale}, Seed: {seed}{', GFPGAN' if use_GFPGAN and GFPGAN is not None else ''}
+        """.strip()
+
+    return output_images, seed, info
 
 
-def dream(
+def txt2img(
     prompt: str,
     ddim_steps: int,
     sampler_name: str,
@@ -276,21 +335,13 @@ def dream(
     prompt_matrix: bool,
     ddim_eta: float,
     n_iter: int,
-    n_samples: int,
+    batch_size: int,
     cfg_scale: float,
     seed: int,
     height: int,
     width: int,
 ):
-    torch.cuda.empty_cache()
-
     outpath = opt.outdir or "outputs/txt2img-samples"
-
-    if seed == -1:
-        seed = random.randrange(4294967294)
-
-    seed = int(seed)
-    keep_same_seed = False
 
     is_PLMS = sampler_name == "PLMS"
     is_DDIM = sampler_name == "DDIM"
@@ -306,136 +357,40 @@ def dream(
     else:
         raise Exception("Unknown sampler: " + sampler_name)
 
-    model_wrap = K.external.CompVisDenoiser(model)
+    def init():
+        pass
 
-    os.makedirs(outpath, exist_ok=True)
-
-    batch_size = n_samples
-
-    assert prompt is not None
-    prompts = batch_size * [prompt]
-
-    sample_path = os.path.join(outpath, "samples")
-    os.makedirs(sample_path, exist_ok=True)
-    base_count = len(os.listdir(sample_path))
-    grid_count = len(os.listdir(outpath)) - 1
-
-    prompt_matrix_prompts = []
-    prompt_matrix_parts = []
-    if prompt_matrix:
-        keep_same_seed = True
-
-        prompt_matrix_parts = prompt.split("|")
-        combination_count = 2 ** (len(prompt_matrix_parts) - 1)
-        for combination_num in range(combination_count):
-            current = prompt_matrix_parts[0]
-            label = "A"
-
-            for n, text in enumerate(prompt_matrix_parts[1:]):
-                if combination_num & (2**n) > 0:
-                    current += ("" if text.strip().startswith(",") else ", ") + text
-                    label += chr(ord("B") + n)
-
-            prompt_matrix_prompts.append(current)
-        n_iter = math.ceil(len(prompt_matrix_prompts) / batch_size)
-
-        print(
-            f"Prompt matrix will create {len(prompt_matrix_prompts)} images using a total of {n_iter} batches."
+    def sample(init_data, x, conditioning, unconditional_conditioning):
+        samples_ddim, _ = sampler.sample(
+            S=ddim_steps,
+            conditioning=conditioning,
+            batch_size=int(x.shape[0]),
+            shape=x[0].shape,
+            verbose=False,
+            unconditional_guidance_scale=cfg_scale,
+            unconditional_conditioning=unconditional_conditioning,
+            eta=ddim_eta,
+            x_T=x,
         )
+        return samples_ddim
 
-    precision_scope = autocast if opt.precision == "autocast" else nullcontext
-    output_images = []
-    with torch.no_grad(), precision_scope("cuda"), model.ema_scope():
-        for n in range(n_iter):
-            if prompt_matrix:
-                prompts = prompt_matrix_prompts[n * batch_size : (n + 1) * batch_size]
-            uc = None
-            if cfg_scale != 1.0:
-                uc = model.get_learned_conditioning(len(prompts) * [""])
-            if isinstance(prompts, tuple):
-                prompts = list(prompts)
-            c = model.get_learned_conditioning(prompts)
-            shape = [opt_C, height // opt_f, width // opt_f]
-
-            batch_seed = seed if keep_same_seed else seed + n * len(prompts)
-
-            xs = []
-            for i in range(len(prompts)):
-                current_seed = seed if keep_same_seed else batch_seed + i
-                torch.manual_seed(current_seed)
-                xs.append(torch.randn(shape, device=opt.device))
-            x = torch.stack(xs)
-
-            if is_Kdif:
-                sigmas = model_wrap.get_sigmas(ddim_steps)
-                x = x * sigmas[0]
-                model_wrap_cfg = CFGDenoiser(model_wrap)
-                samples_ddim = K.sampling.sample_lms(
-                    model_wrap_cfg,
-                    x,
-                    sigmas,
-                    extra_args={"cond": c, "uncond": uc, "cond_scale": cfg_scale},
-                    disable=False,
-                )
-
-            elif sampler is not None:
-                samples_ddim, _ = sampler.sample(
-                    S=ddim_steps,
-                    conditioning=c,
-                    batch_size=len(prompts),
-                    shape=shape,
-                    verbose=False,
-                    unconditional_guidance_scale=cfg_scale,
-                    unconditional_conditioning=uc,
-                    eta=ddim_eta,
-                    x_T=None,
-                )
-
-            x_samples_ddim = model.decode_first_stage(samples_ddim)
-            x_samples_ddim = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
-
-            if prompt_matrix or not opt.skip_save or not opt.skip_grid:
-                for i, x_sample in enumerate(x_samples_ddim):
-                    x_sample = 255.0 * rearrange(
-                        x_sample.cpu().numpy(), "c h w -> h w c"
-                    )
-                    x_sample = x_sample.astype(np.uint8)
-
-                    # if use_GFPGAN and GFPGAN is not None:
-                    #     cropped_faces, restored_faces, restored_img = GFPGAN.enhance(x_sample, has_aligned=False, only_center_face=False, paste_back=True)
-                    #     x_sample = restored_img
-
-                    image = Image.fromarray(x_sample)
-                    file_name = f"{base_count:05}-{seed if keep_same_seed else batch_seed + i}_{prompts[i].replace(' ', '_').translate({ord(x): '' for x in invalid_filename_chars})[:128]}.png"
-                    image.save(
-                        os.path.join(
-                            sample_path,
-                            f"{base_count:05}-{current_seed}_{prompt.replace(' ', '_')[:128]}.png",
-                        )
-                    )
-                    image.save(os.path.join(sample_path, file_name))
-
-                    output_images.append(image)
-                    base_count += 1
-
-        if prompt_matrix or not opt.skip_grid:
-            # additionally, save as grid
-            grid = image_grid(output_images, batch_size, round_down=prompt_matrix)
-
-            if prompt_matrix:
-                grid = draw_prompt_matrix(grid, width, height, prompt_matrix_parts)
-                output_images.insert(0, grid)
-
-            grid.save(os.path.join(outpath, f"grid-{grid_count:04}.png"))
-            grid_count += 1
-
-    if sampler is not None:
-        del sampler
-
-    info = f"""
-{prompt}
-Steps: {ddim_steps}, Sampler: {sampler_name}, CFG scale: {cfg_scale}, Seed: {seed}{', GFPGAN' if use_GFPGAN else ''}
-    """.strip()
+    output_images, seed, info = process_images(
+        outpath=outpath,
+        func_init=init,
+        func_sample=sample,
+        prompt=prompt,
+        seed=seed,
+        sampler_name=sampler_name,
+        batch_size=batch_size,
+        n_iter=n_iter,
+        steps=ddim_steps,
+        cfg_scale=cfg_scale,
+        width=width,
+        height=height,
+        prompt_matrix=prompt_matrix,
+        use_GFPGAN=use_GFPGAN,
+    )
+    del sampler
 
     return output_images, seed, info
 
@@ -447,8 +402,8 @@ if __name__ == "__main__":
     model = get_model(opt.config, opt.ckpt)
     model = model.half().to(opt.device)
 
-    dream_interface = gr.Interface(
-        dream,
+    txt2img_interface = gr.Interface(
+        txt2img,
         inputs=[
             gr.Textbox(
                 label="Prompt",
@@ -513,7 +468,7 @@ if __name__ == "__main__":
     )
 
     img2img_interface = gr.Interface(
-        translation,
+        img2img,
         inputs=[
             gr.Textbox(
                 placeholder="A fantasy landscape, trending on artstation.", lines=1
@@ -563,14 +518,18 @@ if __name__ == "__main__":
                 minimum=64, maximum=2048, step=64, label="Resize Width", value=512
             ),
         ],
-        outputs=[gr.Gallery(), gr.Number(label="Seed")],
+        outputs=[
+            gr.Gallery(),
+            gr.Number(label="Seed"),
+            gr.Textbox(label="Copy-Paste generation parameters"),
+        ],
         title="Stable Diffusion Image-to-Image",
         description="Generate images from images with Stable Diffusion",
         allow_flagging="never",
     )
 
     demo = gr.TabbedInterface(
-        interface_list=[dream_interface, img2img_interface],
+        interface_list=[txt2img_interface, img2img_interface],
         tab_names=["txt2img", "img2img"],
     )
 
