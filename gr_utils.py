@@ -11,7 +11,7 @@ class Flagging(gr.FlaggingCallback):
     def flag(self, flag_data, flag_option=None, flag_index=None, username=None) -> int:
         os.makedirs("log/images", exist_ok=True)
 
-        # Those must match the "dream" function
+        # Those must match the "txt2img" function
         (
             prompt,
             ddim_steps,
