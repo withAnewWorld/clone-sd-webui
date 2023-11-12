@@ -67,4 +67,4 @@ model:
           target: torch.nn.Identity
 
     cond_stage_config:
-      target: latent-diffusion.ldm.modules.encoders.modules.FrozenCLIPTextEmbedder
+      target: latent-diffusion.ldm.modules.encoders.modules.FrozenCLIPEmbedder
