@@ -1,17 +1,13 @@
 # 환경설정
 ```bash
-conda create -n {env_name} python=3.8
+conda create -n {env_name} python=3.10
 conda activate {env_name}
 git clone https://github.com/CompVis/latent-diffusion.git
 git clone https://github.com/CompVis/taming-transformers
 pip install -e ./taming-transformers
-cd latent-diffusion/
-mkdir models/ldm/txt2img-f8-large
-cd models/ldm/txt2img-f8-large
-apt-get install axel
-axel https://ommer-lab.com/files/latent-diffusion/nitro/txt2img-f8-large/model.ckpt
-pip install omegaconf>=2.0.0 pytorch-lightning>=1.7.7 torch-fidelity einops ldm-fix k-diffusion gradio pre-commit black transfomers
+wget https://huggingface.co/runwayml/stable-diffusion-v1-5/resolve/main/v1-5-pruned-emaonly.ckpt # sd v-1.5
+pip install omegaconf>=2.0.0 pytorch-lightning>=1.7.7 torch-fidelity einops ldm-fix k-diffusion gradio pre-commit black
+pip install transfomers
 pre-commit install
-cd /clone-sd-webui/
 apt-get install msttcorefonts # for font(arial.ttf)
 ```
