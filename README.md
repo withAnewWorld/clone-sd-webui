@@ -10,4 +10,5 @@ pip install omegaconf>=2.0.0 pytorch-lightning>=1.7.7 torch-fidelity einops ldm-
 pip install transfomers
 pre-commit install
 apt-get install msttcorefonts # for font(arial.ttf)
+wget https://files.catbox.moe/e2ui6r.pt # sample textual inversion file
 ```

@@ -3,6 +3,9 @@ from omegaconf import OmegaConf
 import torch
 from PIL import Image, ImageFont, ImageDraw
 import math
+import os
+import torch
+import torch.nn as nn
 
 
 def load_model_from_config(config, ckpt, verbose=False):
@@ -121,3 +124,56 @@ def create_random_tensors(shape, seeds, device):
         xs.append(torch.randn(shape, device=device))
     x = torch.stack(xs)
     return x
+
+
+class TextualInversionLoader:
+    def load_textual_inversion(self, tokenizer, token_embedding, path, filename):
+        token, embedding_vector = self.process_file(path, filename)
+
+        new_token_embedding = self.get_resized_token_embeddings(token_embedding, 1)
+
+        tokenizer.add_tokens(token)
+        token_id = tokenizer.convert_tokens_to_ids(token)
+        new_token_embedding.weight.data[token_id] = embedding_vector
+        print(f"Loaded textual inversion embedding for {token}")
+
+        return tokenizer, new_token_embedding
+
+    def process_file(self, path, filename):
+        name = os.path.splitext(filename)[0]
+
+        data = torch.load(path)
+        param_dict = data["string_to_param"]
+        if hasattr(param_dict, "_parameters"):
+            param_dict = getattr(param_dict, "_parameters")
+        assert len(param_dict) == 1, "embedding file has multiple terms in it"
+        embedding_vector = next(iter(param_dict.items()))[1].reshape(768)
+        return name, embedding_vector
+
+    def get_resized_token_embeddings(self, embedding, num_new_tokens):
+        old_num_tokens, old_embedding_dim = embedding.weight.shape
+
+        # Creating new embedding layer with more entries
+        new_embedding = nn.Embedding(old_num_tokens + num_new_tokens, old_embedding_dim)
+
+        # Setting device and type accordingly
+        new_embedding.to(
+            embedding.weight.device,
+            dtype=embedding.weight.dtype,
+        )
+
+        # Copying the old entries
+        new_embedding.weight.data[:old_num_tokens, :] = embedding.weight.data[
+            :old_num_tokens, :
+        ]
+
+        self._test_resized_embeddings(embedding, new_embedding)
+        return new_embedding
+
+    def _test_resized_embeddings(self, old_embedding, new_embedding):
+        old_num_tokens, old_embedding_dim = old_embedding.weight.shape
+        for idx in range(old_num_tokens):
+            assert (
+                torch.all(old_embedding.weight[idx] == new_embedding.weight[idx]).item()
+                == True
+            ), f"different embedding weight in index: {idx}"

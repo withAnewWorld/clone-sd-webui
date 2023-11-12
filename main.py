@@ -438,6 +438,23 @@ if __name__ == "__main__":
     model = get_model(opt.config, opt.ckpt)
     model = model.half().to(opt.device)
 
+    from utils import TextualInversionLoader
+
+    filename = "Usada Pekora.pt"
+    path = os.path.join(os.getcwd(), "Usada Pekora.pt")
+
+    tokenizer = model.cond_stage_model.tokenizer
+    embedding = model.cond_stage_model.transformer.text_model.embeddings.token_embedding
+
+    textual_inversion_loader = TextualInversionLoader()
+    new_tokenizer, new_embedding = textual_inversion_loader.load_textual_inversion(
+        tokenizer, embedding, path, filename
+    )
+    model.cond_stage_model.tokenizer = new_tokenizer
+    model.cond_stage_model.transformer.text_model.embeddings.token_embedding = (
+        new_embedding
+    )
+
     txt2img_interface = gr.Interface(
         txt2img,
         inputs=[
