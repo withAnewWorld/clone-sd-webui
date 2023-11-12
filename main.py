@@ -127,6 +127,42 @@ class CFGDenoiser(nn.Module):
         return uncond + (cond - uncond) * cond_scale
 
 
+class KDiffusionSampler:
+    def __init__(self, m):
+        self.model = m
+        self.model_wrap = K.external.CompVisDenoiser(m)
+
+    def sample(
+        self,
+        S,
+        conditioning,
+        batch_size,
+        shape,
+        verbose,
+        unconditional_guidance_scale,
+        unconditional_conditioning,
+        eta,
+        x_T,
+    ):
+        sigmas = self.model_wrap.get_sigmas(S)
+        x = x_T * sigmas[0]
+        model_wrap_cfg = CFGDenoiser(self.model_wrap)
+
+        samples_ddim = K.sampling.sample_lms(
+            model_wrap_cfg,
+            x,
+            sigmas,
+            extra_args={
+                "cond": conditioning,
+                "uncond": unconditional_conditioning,
+                "cond_scale": unconditional_guidance_scale,
+            },
+            disable=False,
+        )
+
+        return samples_ddim, None
+
+
 def img2img(
     prompt: str,
     init_img,
@@ -142,7 +178,7 @@ def img2img(
 ):
     outpath = opt.outdir or "outputs/img2img-samples"
 
-    sampler = DDIMSampler(model)
+    sampler = KDiffusionSampler(model)
 
     assert 0.0 <= denoising_strength <= 1.0, "can only work with strength in [0.0, 1.0]"
     t_enc = int(denoising_strength * ddim_steps)
