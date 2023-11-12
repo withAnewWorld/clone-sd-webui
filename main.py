@@ -64,13 +64,13 @@ def parse_args():
     parser.add_argument(
         "--config",
         type=str,
-        default="latent-diffusion/configs/latent-diffusion/txt2img-1p4B-eval.yaml",
+        default="v1-inference.yaml",
         help="path to config which constructs model",
     )
     parser.add_argument(
         "--ckpt",
         type=str,
-        default="latent-diffusion/models/ldm/txt2img-f8-large/model.ckpt",
+        default="v1-5-pruned-emaonly.ckpt.1",
         help="path to checkpoint of model",
     )
     parser.add_argument("--device", type=str, default="cuda", help="accelerator")
